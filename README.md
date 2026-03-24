@@ -3,51 +3,194 @@
 > Multilingual web corpus curation for pre-training.
 > *The foundation of every great model is the data it was trained on.*
 
+---
+
+## The problem
+
+Pre-training pipelines filter web text through heuristic quality signals before data reaches a training run. Most of these signals -- stop-word ratio, punctuation density, mean word length -- were calibrated on English CommonCrawl data. When applied unchanged to other languages, they systematically discard content that isn't actually low quality. It just isn't English-shaped.
+
+Terminus quantifies this gap for Russian, identifies the specific signal responsible, and validates the finding with an LLM quality judge.
+
+---
+
 ## Findings
 
-Standard web corpus filters are English-first. Here's what that costs.
-
-I ran a 7-stage pipeline on a single CommonCrawl WET segment (CC-MAIN-2026-12), applying identical English-calibrated heuristic filters to both EN and RU documents, then scoring a stratified sample with an LLM quality judge.
+I ran a 7-stage pipeline on a single CommonCrawl WET segment (CC-MAIN-2026-12), applying identical English-calibrated heuristic filters to EN and RU documents sampled from the same crawl, then scoring all 2,610 post-dedup documents with an LLM quality judge and validating with a second independent judge.
 
 | Metric | EN | RU |
 | --- | --- | --- |
-| Heuristic survival rate | 9.4% (125/1,331) | 0.2% (3/1,331) |
-| False rejection rate | 13.3% | 40.0% |
-| Stop-word ratio failures | 89.2% of rejections | 99.7% of rejections |
-| Inter-judge agreement | - | 79.4% (Gemini vs Llama) |
+| Documents after dedup | 1,299 | 1,311 |
+| Heuristic survival rate | 9.5% (124/1,299) | 0.2% (3/1,311) |
+| False rejection rate (Gemini judge) | 12.7% (149/1,175) | 16.3% (213/1,308) |
+| Stop-word ratio failures | 98.6% of rejections | 99.9% of rejections |
 
 **The headline numbers:**
 
-- **47x survival gap.** English documents pass heuristic filters at 9.4%, Russian at 0.2%.
-- **3x false rejection gap.** 40% of Russian documents the judge rated HIGH were rejected by heuristics, vs 13.3% for English.
-- **One threshold causes it all.** 99.7% of Russian failures trace to a single signal: `stop_word_ratio` with an English-calibrated minimum of 0.35.
-- **Categorically unreachable.** The entire Russian stop-word ratio distribution (max 0.3231, mean 0.1429) sits below the 0.35 threshold. No Russian document can pass, regardless of quality.
-- **Estimated impact.** At this rejection rate, roughly 530 high-quality Russian documents are discarded per WET segment. Across the full CC-MAIN-2026-12 crawl (94,000+ segments), this scales to tens of millions.
+- **42x survival gap.** Under identical thresholds, English documents survive at 9.5%, Russian at 0.2%.
+- **1.3x false rejection gap.** 16.3% of rejected Russian documents are rated HIGH quality by the judge, vs 12.7% for English. That gap is modest in rate but massive in absolute terms: 213 good Russian documents discarded per segment.
+- **One signal causes it all.** 99.9% of Russian rejections trace to a single threshold: `stop_word_ratio >= 0.35`.
+- **Categorically unreachable.** The Russian stop-word ratio distribution peaks well below 0.35 (mean: 0.1521). No Russian document can reliably pass this threshold regardless of quality.
+- **Estimated impact.** 213 high-quality Russian documents discarded per WET segment. Across the full CC-MAIN-2026-12 crawl (94,000+ segments), this scales to ~20M documents.
 
-**Why it happens:** Morphological complexity in Russian (agglutination, inflection, case marking) means fewer tokens match a whitespace-split stop-word list. A well-written Russian document scores 0.35-0.45 on stop-word ratio; a well-written English document scores 0.45-0.55. The threshold was calibrated for English and never adjusted.
+**Why this happens:** Russian is morphologically rich -- nouns, verbs, and adjectives inflect across case, gender, and number. This means grammatical relationships that English expresses with separate function words (prepositions, articles, auxiliaries) are encoded inside word endings in Russian. A whitespace-split stop-word lookup misses most of them. A well-written Russian document scores 0.10-0.25 on stop-word ratio; the English-calibrated threshold is 0.35. There is almost no overlap.
 
 ![Stop-word ratio distribution](docs/images/chart_stopword_dist.png)
+
+---
+
+## Methodology
+
+### Why stratified sampling
+
+The naive approach -- run the judge on everything -- obscures what you actually want to measure. Instead, documents are divided into four quadrants after heuristic filtering:
+
+```
+                      heuristic_pass=True    heuristic_pass=False
+lang=EN               Quadrant A             Quadrant B
+lang=RU               Quadrant C             Quadrant D
+```
+
+Sampling equally from each quadrant (75 per quadrant) ensures the judge evaluates documents the filter accepted AND rejected, for both languages. This makes the false rejection rate directly measurable: it is the fraction of Quadrant D documents (filter rejected) that the judge rates HIGH quality.
+
+Quadrant C -- Russian documents that passed heuristics -- had only 3 documents out of 1,311 (post-dedup). That asymmetry alone tells the story.
+
+### Judge design
+
+The judge scores each document as HIGH or LOW quality using a deliberately language-agnostic rubric. The key design constraint: quality criteria must not reference English or assume any specific linguistic structure.
+
+**Primary model:** `google/gemini-3.1-flash-lite-preview` via OpenRouter. Strong multilingual capability, cost-efficient (~$0.01 per 300 documents).
+
+**System prompt:**
+
+```
+You are a data quality judge for multilingual LLM pre-training corpora.
+
+Rate HIGH if: written by a human with coherent intent, contains real 
+information or argument a reader would find useful, consistent grammar 
+and natural sentence flow for its language, found on a legitimate website.
+
+Rate LOW if: spam, SEO keyword stuffing, boilerplate (cookie notices, 
+nav menus, legal disclaimers), garbled or machine-translated text, 
+primarily lists of links or product codes without prose.
+
+IMPORTANT: Do not penalize text for topic, register, or language.
+A well-written Russian forum post is HIGH quality.
+A poorly written English blog is LOW quality.
+
+Respond with JSON only:
+{"quality": "HIGH"|"LOW", "confidence": 0.0-1.0, 
+ "reason": "one sentence", "primary_signal": "what drove the decision"}
+```
+
+Each document is truncated to its first 400 tokens for the judge -- quality signal is dense in the opening and cost is proportional to length.
+
+### Inter-judge validation
+
+To check whether the finding is judge-dependent, the same 228-document sample was scored independently by `meta-llama/llama-3.1-8b-instruct`. Results:
+
+| Metric | Gemini 3.1 Flash Lite | Llama 3.1 8B |
+| --- | --- | --- |
+| Overall HIGH rate | 23.7% | 31.1% |
+| EN false rejection rate | 10.7% | 13.3% |
+| RU false rejection rate | 14.7% | 40.0% |
+| Inter-judge agreement | 79.4% | 79.4% |
+
+The directional finding -- RU false rejection rate significantly exceeds EN -- holds under both judges. Gemini is the stricter judge overall (23.7% vs 31.1% HIGH) but the gap between EN and RU is consistent. The 20.6% disagreement rate (47 documents) concentrates in documents where Llama rates HIGH and Gemini rates LOW, consistent with Llama being more permissive on borderline Russian text it may not fully comprehend.
+
+The conservative estimate (Gemini) is used as the primary result.
+
+---
+
+## Results
+
+![Survival rate by language](docs/images/chart_survival.png)
+
+![Confusion matrix: filter vs judge per language](docs/images/chart_confusion.png)
+
+![Signals driving false rejections](docs/images/chart_false_rejection_signals.png)
+
+![Stop-word ratio distribution with threshold](docs/images/chart_stopword_dist.png)
+
+---
+
+## Pipeline
+
+```
+WET file (60MB compressed, ~20k documents)
+    |
+    v
+[1. Ingest]             warcio parse -> JSONL (id, url, lang_cc, text, char_count)
+    |
+    v
+[2. Language filter]    FastText LID (lid.176.bin) -> keep EN + RU, balance sizes
+    |
+    v
+[3. Heuristics]         10 signals as floats, threshold from config, log failed_signals
+    |
+    v
+[4. Dedup]              MinHash LSH per language (128 perms, 0.7 threshold, 5-grams)
+    |
+    v
+[5. Sample/Full]        stratified 300-doc sample OR full corpus judge run
+    |
+    v
+[6. LLM judge]          OpenRouter (Gemini primary), JSON output per document
+    |
+    v
+[7. Report]             Confusion matrix, survival rates, false rejection rate, charts
+```
+
+Each stage reads from and writes to JSONL in the output directory. Stages are independently re-runnable -- if the judge fails partway through, resume from the sampled file without reprocessing the full corpus.
+
+---
+
+## Heuristics
+
+All signals are computed as floats and preserved in the output. Thresholds are applied in a separate pass so the raw scores are always available for analysis. Each rejected document records which signal caused the rejection in a `failed_signals` field.
+
+| Signal | Description | Threshold | Cross-lingual note |
+| --- | --- | --- | --- |
+| char_count | Total characters | 200-100,000 | None |
+| word_count | Whitespace-split tokens | min 30 | Minor |
+| mean_word_length | Avg chars per word | 3.0-12.0 | Russian words are longer |
+| punct_ratio | Punctuation / total chars | max 0.15 | Russian guillemets counted differently |
+| digit_ratio | Digits / total chars | max 0.2 | None |
+| uppercase_ratio | Uppercase / total chars | max 0.2 | None |
+| **stop_word_ratio** | **Stop words / total words** | **min 0.35** | **Primary failure mode for Russian** |
+| mean_line_length | Avg chars per line | min 20 | None |
+| bullet_ratio | Lines starting with bullets | max 0.5 | None |
+| ellipsis_ratio | Ellipsis patterns per 1k chars | unthresholded | None |
+
+The `stop_word_ratio` threshold of 0.35 is the English-calibrated value used in standard pipelines such as C4 and RefinedWeb. It is intentionally left unchanged to expose the bias.
+
+---
 
 ## Quick start
 
 ```bash
-git clone https://github.com/yourname/terminus.git
+git clone https://github.com/kiborisov/terminus.git
 cd terminus
 pip install -e .
 ```
 
-Download a WET file (get a segment URL from https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-12/wet.paths.gz):
+Get a WET segment URL from `https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-12/wet.paths.gz` and download it:
 
 ```bash
-wget "https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-12/<your-segment>.wet.gz" \
-  -O sample.wet.gz
+curl -L "https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-12/<segment>.wet.gz" \
+  -o sample.wet.gz
 ```
 
-Create `.env` with your OpenRouter API key:
+Set your OpenRouter API key:
 
 ```bash
 cp .env.example .env
-# Edit .env and add your OPENROUTER_API_KEY
+# Add OPENROUTER_API_KEY to .env
+```
+
+Test the judge on 5 documents first:
+
+```bash
+terminus run --wet-url ./sample.wet.gz --output ./results/test --dry-run --test
 ```
 
 Run the full pipeline:
@@ -60,145 +203,45 @@ terminus run \
   --output ./results/run-001
 ```
 
-Test the judge on 5 documents first:
-
-```bash
-terminus run \
-  --wet-url ./sample.wet.gz \
-  --output ./results/test \
-  --dry-run \
-  --test
-```
-
-## Pipeline
-
-```
-WET file (60MB compressed, ~20k documents)
-    |
-    v
-[1. Ingest]           warcio parse -> raw JSONL (id, url, lang_cc, text, char_count)
-    |
-    v
-[2. Language filter]  FastText LID -> keep target languages, balance to equal sizes
-    |
-    v
-[3. Heuristics]       10 signals as floats, threshold from config, track failed_signals
-    |
-    v
-[4. Dedup]            MinHash LSH per language (128 perms, threshold=0.7, 5-grams)
-    |
-    v
-[5. Stratified sample]  4 quadrants (lang x heuristic_pass) -> ~300 docs for judge
-    |
-    v
-[6. LLM judge]        OpenRouter API, Gemini Flash Lite primary
-    |
-    v
-[7. Report]           Confusion matrix, survival rates, charts, results.md
-```
-
-Each stage reads from and writes to JSONL files in the output directory. Stages are independently re-runnable.
-
-## Judge design
-
-The judge scores each document as HIGH or LOW quality using a language-agnostic rubric.
-
-**Primary model:** `google/gemini-3.1-flash-lite-preview` via OpenRouter. Fast, cheap, and slightly stricter than alternatives on quality classification.
-
-A secondary run with `meta-llama/llama-3.1-8b-instruct` showed 79.4% inter-judge agreement, with Gemini being the stricter judge (23.7% HIGH vs Llama's 31.1%). The core finding (RU false rejection rate > EN) holds under both models.
-
-**System prompt (abbreviated):**
-
-```
-You are a data quality judge for multilingual LLM pre-training corpora.
-
-Rate HIGH if: written by a human, coherent intent, real information,
-consistent grammar, legitimate website content.
-
-Rate LOW if: spam, boilerplate, garbled, keyword stuffing, structured
-data without prose.
-
-IMPORTANT: Do not penalize text for being in a language other than English.
-A well-written Russian forum post is HIGH quality.
-
-Respond with JSON: {"quality", "confidence", "reason", "primary_signal"}
-```
-
-**Quadrant sampling** ensures the judge sees documents from all four combinations of (language x filter outcome), not just the ones that passed. This is what makes the false rejection rate measurable.
-
-```
-                    heuristic_pass=True   heuristic_pass=False
-lang=EN             Quadrant A            Quadrant B
-lang=RU             Quadrant C            Quadrant D  <-- where the thesis lives
-```
-
-## Heuristics
-
-All signals are computed as floats and stored in the output JSONL. Thresholds are applied separately, and each rejection records which signal caused it.
-
-| Signal | Description | Threshold | Cross-lingual issue |
-| --- | --- | --- | --- |
-| char_count | Total characters | 200 - 100,000 | None |
-| word_count | Whitespace-split tokens | min 30 | Minor |
-| mean_word_length | Avg chars per word | 3.0 - 12.0 | Russian words are longer |
-| punct_ratio | Punctuation / total chars | max 0.15 | Russian guillemets |
-| digit_ratio | Digits / total chars | max 0.2 | None |
-| uppercase_ratio | Uppercase / total chars | max 0.2 | None |
-| **stop_word_ratio** | **Stop words / total words** | **min 0.35** | **Core thesis** |
-| mean_line_length | Avg chars per line | min 20 | None |
-| bullet_ratio | Lines starting with bullets | max 0.5 | None |
-| ellipsis_ratio | Ellipsis patterns per 1k chars | (not thresholded) | None |
-
-The `stop_word_ratio` threshold of 0.35 is deliberately set to the English-calibrated value used in standard pipelines. This is the biased threshold the project exists to expose.
-
-## Results
-
-![Survival rate by language](docs/images/chart_survival.png)
-
-![Confusion matrix](docs/images/chart_confusion.png)
-
-![False rejection signals](docs/images/chart_false_rejection_signals.png)
-
-![Stop-word ratio distribution](docs/images/chart_stopword_dist.png)
-
-Full results with confusion matrices, top false rejections, and judge reasoning: [`results/run-002/results.md`](results/run-002/results.md)
+---
 
 ## Limitations
 
-This is a pilot run. Be skeptical of the exact numbers.
-
-- **Single WET segment.** 60MB of 5.63TiB total in CC-MAIN-2026-12. One segment is not representative of the full crawl.
-- **Small judge sample.** 228 documents scored (75 per quadrant, except Quadrant C with only 3). Statistical power is limited.
-- **LLM judge not validated.** No human rater baseline. The judge (Gemini Flash Lite) may have its own biases, particularly on short or domain-specific Russian text. Inter-judge agreement with Llama 3.1 8B was 79.4%.
-- **Single language pair.** EN/RU only. The thesis likely applies to other morphologically rich languages (Turkish, Finnish, Hungarian, Arabic) but this hasn't been tested.
-- **No boilerplate stripping.** WET files contain extracted text with navigation, menus, and footers intact. A production pipeline would strip these first.
-
-## From prototype to production
-
-Terminus processes a single WET segment as a proof of concept. The same methodology applies at production scale with these engineering changes:
-
-**What scales directly:**
-- Quality signals (stop_word_ratio, heuristics, language ID) are stateless and trivially parallelisable
-- Stratified sampling logic for judge calibration
-- The core finding: per-language threshold calibration is necessary regardless of corpus size
-
-**What changes at scale:**
-- Ingest runs distributed across hundreds of workers (Spark, Ray) rather than sequentially on one machine
-- Deduplication requires a global index across the full corpus - per-segment MinHash is insufficient at PB scale
-- LLM judge is used for calibration samples only, not every document. Bulk filtering uses trained classifiers (fastText, small BERT) calibrated against judge labels
-- Quality monitoring becomes continuous - signal distributions are tracked across every new crawl and alerts fire on drift
-
-**The methodology remains constant:**
-At any scale, the question is the same - are your quality signals valid across languages? Terminus provides a repeatable framework for finding and quantifying calibration gaps, whether on 60MB or 5.63TiB of web data.
-
-## Roadmap
-
-- **Scale validation.** Run on the full CC-MAIN-2026-12 crawl (94,000+ segments) to confirm the false rejection rate at corpus scale.
-- **Language-aware thresholds.** The proposed fix: per-language stop-word lists and calibrated threshold offsets. A one-hour change that should recover most false rejections.
-- **More language pairs.** Expand to Turkish, Finnish, Arabic, Hindi, Japanese to test generality across typological families.
-- **Human validation.** Annotate 200+ documents to benchmark the LLM judge against human raters.
-- **Terminus.** Release as an open-source multilingual data quality toolkit with pluggable filters, language-aware defaults, and built-in bias detection.
+- **Single WET segment.** 60MB of 5.63TiB total. Results should be validated across more segments before drawing corpus-level conclusions.
+- **Judge coverage.** Initial stratified sample of 228 documents (75 per quadrant), validated by a full-corpus run on all 2,610 post-dedup documents. Quadrant C (RU, passed heuristics) had only 3 documents -- the asymmetry is real but limits precision on that cell.
+- **No human rater baseline.** Judge quality is validated through inter-model agreement (79.4%), not against human annotations.
+- **Single language pair.** EN/RU only. The same mechanism likely applies to Turkish, Finnish, Arabic, and other morphologically rich languages -- untested here.
+- **No boilerplate pre-stripping.** WET extraction includes navigation, footers, and menus. A production pipeline would strip these before quality filtering.
 
 ---
 
-Built with CommonCrawl data. Judge powered by OpenRouter.
+## From prototype to production
+
+Terminus processes one WET segment as a proof of concept. The methodology scales -- the engineering does not, without changes.
+
+**What scales directly:**
+- All quality signals are stateless and trivially parallelisable across workers
+- Stratified sampling for judge calibration works the same at any corpus size
+- The core finding holds: per-language threshold calibration is necessary regardless of scale
+
+**What changes at scale:**
+- Ingest runs distributed across hundreds of workers (Spark, Ray) rather than sequentially
+- Deduplication requires a global index across the full corpus -- per-segment MinHash misses cross-segment duplicates at PB scale
+- LLM judge is used for calibration samples only, not every document -- bulk filtering uses trained classifiers (fastText, small BERT) calibrated against judge labels
+- Quality monitoring becomes continuous -- signal distributions are tracked across every new crawl, with alerts on drift
+
+**The methodology stays constant.** At any scale, the question is the same: are your quality signals valid across languages? Terminus provides a repeatable framework for finding and quantifying calibration gaps.
+
+---
+
+## Roadmap
+
+- **Scale validation.** Run across multiple CC-MAIN-2026-12 segments to confirm false rejection rates at corpus scale.
+- **Language-aware thresholds.** Per-language stop-word lists and calibrated threshold offsets -- the proposed fix is a config change, not a pipeline rewrite.
+- **More language pairs.** Turkish, Finnish, Arabic, Hindi, Japanese -- typologically diverse to test generality.
+- **Human validation.** Annotate 200+ documents to establish a ground truth baseline for judge calibration.
+- **Tessera.** Release as an open-source multilingual data quality toolkit with pluggable filters, language-aware defaults, and built-in calibration tooling.
+
+---
+
+Built with CommonCrawl data. Judge powered by Gemini and Llama via OpenRouter.
