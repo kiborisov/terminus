@@ -93,7 +93,6 @@ To check whether the finding is judge-dependent, the same 228-document sample wa
 | Overall HIGH rate | 23.7% | 31.1% |
 | EN false rejection rate | 10.7% | 13.3% |
 | RU false rejection rate | 14.7% | 40.0% |
-| Inter-judge agreement | 79.4% | 79.4% |
 
 The directional finding -- RU false rejection rate significantly exceeds EN -- holds under both judges. Gemini is the stricter judge overall (23.7% vs 31.1% HIGH) but the gap between EN and RU is consistent. The 20.6% disagreement rate (47 documents) concentrates in documents where Llama rates HIGH and Gemini rates LOW, consistent with Llama being more permissive on borderline Russian text it may not fully comprehend.
 
