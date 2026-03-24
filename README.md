@@ -7,13 +7,14 @@
 
 Standard web corpus filters are English-first. Here's what that costs.
 
-I ran a 7-stage pipeline on a single CommonCrawl WET segment (CC-MAIN-2024-51), applying identical English-calibrated heuristic filters to both EN and RU documents, then scoring a stratified sample with an LLM quality judge.
+I ran a 7-stage pipeline on a single CommonCrawl WET segment (CC-MAIN-2026-12), applying identical English-calibrated heuristic filters to both EN and RU documents, then scoring a stratified sample with an LLM quality judge.
 
 | Metric | EN | RU |
 | --- | --- | --- |
 | Heuristic survival rate | 9.4% (125/1,331) | 0.2% (3/1,331) |
 | False rejection rate | 13.3% | 40.0% |
 | Stop-word ratio failures | 89.2% of rejections | 99.7% of rejections |
+| Inter-judge agreement | - | 79.4% (Gemini vs Llama) |
 
 **The headline numbers:**
 
@@ -21,11 +22,11 @@ I ran a 7-stage pipeline on a single CommonCrawl WET segment (CC-MAIN-2024-51), 
 - **3x false rejection gap.** 40% of Russian documents the judge rated HIGH were rejected by heuristics, vs 13.3% for English.
 - **One threshold causes it all.** 99.7% of Russian failures trace to a single signal: `stop_word_ratio` with an English-calibrated minimum of 0.35.
 - **Categorically unreachable.** The entire Russian stop-word ratio distribution (max 0.3231, mean 0.1429) sits below the 0.35 threshold. No Russian document can pass, regardless of quality.
-- **Estimated impact.** At this rejection rate, roughly 530 high-quality Russian documents are discarded per WET segment. Across the full CC-MAIN-2024-51 crawl (94,000+ segments), this scales to tens of millions.
+- **Estimated impact.** At this rejection rate, roughly 530 high-quality Russian documents are discarded per WET segment. Across the full CC-MAIN-2026-12 crawl (94,000+ segments), this scales to tens of millions.
 
 **Why it happens:** Morphological complexity in Russian (agglutination, inflection, case marking) means fewer tokens match a whitespace-split stop-word list. A well-written Russian document scores 0.35-0.45 on stop-word ratio; a well-written English document scores 0.45-0.55. The threshold was calibrated for English and never adjusted.
 
-![Stop-word ratio distribution](results/run-002/chart_stopword_dist.png)
+![Stop-word ratio distribution](docs/images/chart_stopword_dist.png)
 
 ## Quick start
 
@@ -35,10 +36,10 @@ cd terminus
 pip install -e .
 ```
 
-Download a WET file:
+Download a WET file (get a segment URL from https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-12/wet.paths.gz):
 
 ```bash
-wget "https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-51/segments/1733066637688.46/wet/CC-MAIN-20241205095407-20241205125407-00000.wet.gz" \
+wget "https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-12/<your-segment>.wet.gz" \
   -O sample.wet.gz
 ```
 
@@ -90,7 +91,7 @@ WET file (60MB compressed, ~20k documents)
 [5. Stratified sample]  4 quadrants (lang x heuristic_pass) -> ~300 docs for judge
     |
     v
-[6. LLM judge]        OpenRouter API, Llama 3.1 8B bulk + Mistral Small fallback
+[6. LLM judge]        OpenRouter API, Gemini Flash Lite primary
     |
     v
 [7. Report]           Confusion matrix, survival rates, charts, results.md
@@ -102,9 +103,9 @@ Each stage reads from and writes to JSONL files in the output directory. Stages 
 
 The judge scores each document as HIGH or LOW quality using a language-agnostic rubric.
 
-**Primary model:** `meta-llama/llama-3.1-8b-instruct` via OpenRouter. Fast, cheap (~$0.01 for 300 docs), good enough for binary quality classification.
+**Primary model:** `google/gemini-3.1-flash-lite-preview` via OpenRouter. Fast, cheap, and slightly stricter than alternatives on quality classification.
 
-**Fallback model:** `mistralai/mistral-small` for documents where primary confidence < 0.5. Better reasoning on edge cases.
+A secondary run with `meta-llama/llama-3.1-8b-instruct` showed 79.4% inter-judge agreement, with Gemini being the stricter judge (23.7% HIGH vs Llama's 31.1%). The core finding (RU false rejection rate > EN) holds under both models.
 
 **System prompt (abbreviated):**
 
@@ -152,13 +153,13 @@ The `stop_word_ratio` threshold of 0.35 is deliberately set to the English-calib
 
 ## Results
 
-![Survival rate by language](results/run-002/chart_survival.png)
+![Survival rate by language](docs/images/chart_survival.png)
 
-![Confusion matrix](results/run-002/chart_confusion.png)
+![Confusion matrix](docs/images/chart_confusion.png)
 
-![False rejection signals](results/run-002/chart_false_rejection_signals.png)
+![False rejection signals](docs/images/chart_false_rejection_signals.png)
 
-![Stop-word ratio distribution](results/run-002/chart_stopword_dist.png)
+![Stop-word ratio distribution](docs/images/chart_stopword_dist.png)
 
 Full results with confusion matrices, top false rejections, and judge reasoning: [`results/run-002/results.md`](results/run-002/results.md)
 
@@ -166,15 +167,33 @@ Full results with confusion matrices, top false rejections, and judge reasoning:
 
 This is a pilot run. Be skeptical of the exact numbers.
 
-- **Single WET segment.** 60MB of 5.63TiB total in CC-MAIN-2024-51. One segment is not representative of the full crawl.
+- **Single WET segment.** 60MB of 5.63TiB total in CC-MAIN-2026-12. One segment is not representative of the full crawl.
 - **Small judge sample.** 228 documents scored (75 per quadrant, except Quadrant C with only 3). Statistical power is limited.
-- **LLM judge not validated.** No human rater baseline. The judge (Llama 3.1 8B) may have its own biases, particularly on short or domain-specific Russian text.
+- **LLM judge not validated.** No human rater baseline. The judge (Gemini Flash Lite) may have its own biases, particularly on short or domain-specific Russian text. Inter-judge agreement with Llama 3.1 8B was 79.4%.
 - **Single language pair.** EN/RU only. The thesis likely applies to other morphologically rich languages (Turkish, Finnish, Hungarian, Arabic) but this hasn't been tested.
 - **No boilerplate stripping.** WET files contain extracted text with navigation, menus, and footers intact. A production pipeline would strip these first.
 
+## From prototype to production
+
+Terminus processes a single WET segment as a proof of concept. The same methodology applies at production scale with these engineering changes:
+
+**What scales directly:**
+- Quality signals (stop_word_ratio, heuristics, language ID) are stateless and trivially parallelisable
+- Stratified sampling logic for judge calibration
+- The core finding: per-language threshold calibration is necessary regardless of corpus size
+
+**What changes at scale:**
+- Ingest runs distributed across hundreds of workers (Spark, Ray) rather than sequentially on one machine
+- Deduplication requires a global index across the full corpus - per-segment MinHash is insufficient at PB scale
+- LLM judge is used for calibration samples only, not every document. Bulk filtering uses trained classifiers (fastText, small BERT) calibrated against judge labels
+- Quality monitoring becomes continuous - signal distributions are tracked across every new crawl and alerts fire on drift
+
+**The methodology remains constant:**
+At any scale, the question is the same - are your quality signals valid across languages? Terminus provides a repeatable framework for finding and quantifying calibration gaps, whether on 60MB or 5.63TiB of web data.
+
 ## Roadmap
 
-- **Scale validation.** Run on the full CC-MAIN-2024-51 crawl (94,000+ segments) to confirm the false rejection rate at corpus scale.
+- **Scale validation.** Run on the full CC-MAIN-2026-12 crawl (94,000+ segments) to confirm the false rejection rate at corpus scale.
 - **Language-aware thresholds.** The proposed fix: per-language stop-word lists and calibrated threshold offsets. A one-hour change that should recover most false rejections.
 - **More language pairs.** Expand to Turkish, Finnish, Arabic, Hindi, Japanese to test generality across typological families.
 - **Human validation.** Annotate 200+ documents to benchmark the LLM judge against human raters.
