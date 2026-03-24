@@ -1,0 +1,15 @@
+results/
+!results/.gitkeep
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.env
+*.wet.gz
+lid.176.bin
+.venv/
+.DS_Store
+.obsidian/
+wet.paths.gz
+notebooks/

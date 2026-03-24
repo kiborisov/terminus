@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terminus"
+version = "0.1.0"
+description = "Multilingual web corpus quality filtering for pre-training"
+requires-python = ">=3.10"
+dependencies = [
+    "warcio>=1.7",
+    "fasttext-wheel>=0.9",
+    "datasketch>=1.6",
+    "openai>=1.0",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "pyyaml>=6.0",
+    "tqdm>=4.65",
+    "click>=8.1",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+terminus = "terminus.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["terminus*"]

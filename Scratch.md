@@ -1,0 +1,1 @@
+messy notes, dead ends, ideas mid-build
