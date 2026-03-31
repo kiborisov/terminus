@@ -1,8 +1,11 @@
 # Terminus
 
+Multilingual web corpus quality pipeline — quantifying how English-calibrated heuristics systematically discard high-quality Russian pre-training data.
+
+
 > Multilingual web corpus curation for pre-training.
 > *The foundation of every great model is the data it was trained on.*
-
+> nlp, pre-training, data-quality, common-crawl, mutlilingual.
 ---
 
 ## The problem
@@ -53,6 +56,8 @@ lang=RU               Quadrant C             Quadrant D
 Sampling equally from each quadrant (75 per quadrant) ensures the judge evaluates documents the filter accepted AND rejected, for both languages. This makes the false rejection rate directly measurable: it is the fraction of Quadrant D documents (filter rejected) that the judge rates HIGH quality.
 
 Quadrant C -- Russian documents that passed heuristics -- had only 3 documents out of 1,311 (post-dedup). That asymmetry alone tells the story.
+
+EN and RU document counts were balanced at the language filter stage (step 2), ensuring the survival gap reflects filter behavior, not input composition.
 
 ### Judge design
 
