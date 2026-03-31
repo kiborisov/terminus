@@ -42,6 +42,44 @@ I ran a 7-stage pipeline on a single CommonCrawl WET segment (CC-MAIN-2026-12), 
 
 ---
 
+## Compounding bias: tokenizer fertility
+
+The stop-word ratio gap is one layer of a deeper problem. The same English-calibration issue appears independently at the tokenizer level.
+
+Using the LLaMA tokenizer (the vocabulary used to train LLaMA-family models), matched sentences in English, Russian, Turkish, and Finnish produce the following token counts:
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer")
+
+examples = {
+    "EN": "The quick brown fox jumps over the lazy dog",
+    "RU": "Быстрая коричневая лиса прыгает через ленивую собаку",
+    "TR": "Hızlı kahverengi tilki tembel köpeğin üzerinden atlar",
+    "FI": "Nopea ruskea kettu hyppää laiskan koiran yli",
+}
+
+en_count = len(tokenizer.encode(examples["EN"]))
+for lang, text in examples.items():
+    tokens = tokenizer.encode(text)
+    print(f"{lang}: {len(tokens)} tokens ({len(tokens)/en_count:.2f}x EN)")
+```
+
+| Language | Tokens | Fertility vs EN | Notes |
+|---|---|---|---|
+| EN | 12 | 1.00x | Baseline |
+| RU | 22 | 1.83x | Morphological inflection encoded in word endings, not function words |
+| TR | 24 | 2.00x | Agglutinative — suffixes compound into single long words |
+| FI | 22 | 1.83x | Agglutinative — same pattern as Turkish |
+
+**What this means:** Russian tokenizes to fragment-level subwords rather than meaningful units. `"Быстрая"` (quick) → `['Бы', 'стра', 'я']`. `"коричневая"` (brown) → `['ко', 'ри', 'чне', 'вая']`. None of these subword pieces carry standalone meaning.
+
+**The compounding effect:** A Russian document that survives heuristic filtering still costs 1.83x more tokens than the equivalent English content. Even with a corrected stop-word threshold, Russian is structurally underrepresented in the effective training token budget. The two biases are independent and additive.
+
+This suggests that fixing multilingual pre-training corpus quality requires intervention at multiple pipeline stages — not just heuristic filter calibration.
+
+---
+
 ## Methodology
 
 ### Why stratified sampling
@@ -217,7 +255,7 @@ terminus run \
 - **No human rater baseline.** Judge quality is validated through inter-model agreement (79.4%), not against human annotations.
 - **Single language pair.** EN/RU only. The same mechanism likely applies to Turkish, Finnish, Arabic, and other morphologically rich languages -- untested here.
 - **No boilerplate pre-stripping.** WET extraction includes navigation, footers, and menus. A production pipeline would strip these before quality filtering.
-
+- * **Tokenizer fertility not quantified at corpus scale.** The 1.83x RU/EN fertility ratio is demonstrated on sentence pairs. The aggregate effect on Russian's share of the effective token budget across the full corpus is unmeasured.
 ---
 
 ## From prototype to production
@@ -244,6 +282,7 @@ Terminus processes one WET segment as a proof of concept. The methodology scales
 - **Scale validation.** Run across multiple CC-MAIN-2026-12 segments to confirm false rejection rates at corpus scale.
 - **Language-aware thresholds.** Per-language stop-word lists and calibrated threshold offsets -- the proposed fix is a config change, not a pipeline rewrite.
 - **More language pairs.** Turkish, Finnish, Arabic, Hindi, Japanese -- typologically diverse to test generality.
+- * **Fertility-adjusted token budget analysis.** Measure the effective Russian token contribution after fertility correction — the gap between nominal document survival rate and actual token representation.
 - **Human validation.** Annotate 200+ documents to establish a ground truth baseline for judge calibration.
 - **Tessera.** Release as an open-source multilingual data quality toolkit with pluggable filters, language-aware defaults, and built-in calibration tooling.
 
