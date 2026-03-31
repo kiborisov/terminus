@@ -10,7 +10,8 @@ Multilingual web corpus quality pipeline — quantifying how English-calibrated 
 
 ## The problem
 
-Pre-training pipelines filter web text through heuristic quality signals before data reaches a training run. Most of these signals -- stop-word ratio, punctuation density, mean word length -- were calibrated on English CommonCrawl data. When applied unchanged to other languages, they systematically discard content that isn't actually low quality. It just isn't English-shaped.
+Pre-training pipelines filter web text through heuristic quality signals before data reaches a training run. Most of these signals -- stop-word ratio, punctuation density, mean word length -- were calibrated on English CommonCrawl data. When applied unchanged to other languages, they systematically discard content that isn't actually low quality. It just isn't English-shaped. 
+Same argument can be made about English-calibrated tokenizers.
 
 Terminus quantifies this gap for Russian, identifies the specific signal responsible, and validates the finding with an LLM quality judge.
 
